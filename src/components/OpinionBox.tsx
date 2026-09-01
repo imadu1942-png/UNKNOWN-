@@ -25,28 +25,33 @@ export const OpinionBox: React.FC = () => {
     const formattedOpinion = `${authorName}: ${cleanMessage}`;
 
     try {
-      if (supabase) {
-        const { error: insertError } = await supabase
-          .from('opinions')
-          .insert([
-            {
-              opinion_text: formattedOpinion,
-            },
-          ]);
+      if (!supabase) {
+        setError('মতামত পাঠানোর জন্য Supabase ডেটাবেজ কনফিগারেশন প্রয়োজন।');
+        setIsSubmitting(false);
+        return;
+      }
 
-        if (insertError) {
-          console.error('Opinion submission error:', insertError);
-        }
+      const { error: insertError } = await supabase
+        .from('opinions')
+        .insert([
+          {
+            opinion_text: formattedOpinion,
+          },
+        ]);
+
+      if (insertError) {
+        console.error('Opinion submission error:', insertError);
+        setError(`মতামত পাঠানো ব্যর্থ হয়েছে: ${insertError.message}`);
+        setIsSubmitting(false);
+        return;
       }
 
       setSubmitted(true);
       setMessage('');
       setName('');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error submitting opinion:', err);
-      // Still show success to visitor so experience remains smooth
-      setSubmitted(true);
-      setMessage('');
+      setError(`সংযোগ ত্রুটি: ${err?.message || 'মতামত পাঠানো যায়নি'}`);
     } finally {
       setIsSubmitting(false);
     }

@@ -58,131 +58,152 @@ export const LetterCard: React.FC<LetterCardProps> = ({ onRelock }) => {
     let isMounted = true;
 
     async function loadLatestLetterContent() {
-      let loadedFromDb = false;
+      if (!supabase) {
+        console.log('[User Page] ℹ️ Supabase not configured in current environment.');
+        if (isMounted) {
+          setIsLoading(false);
+        }
+        return;
+      }
 
-      if (supabase) {
-        try {
-          console.log('[User Page] 📡 Fetching site_content from Supabase...', {
-            supabaseUrl: import.meta.env.VITE_SUPABASE_URL || 'Configured via client',
-          });
+      try {
+        console.log('[User Page] 📡 Fetching site_content from Supabase...');
 
-          // Attempt 1: Query ordered by updated_at descending
-          let { data, error } = await supabase
+        let fetchedData: any = null;
+        let queryError: any = null;
+
+        // Query Strategy 1: Try ordering by updated_at descending
+        const resUpdated = await supabase
+          .from('site_content')
+          .select('*')
+          .order('updated_at', { ascending: false })
+          .limit(1);
+
+        if (!resUpdated.error && resUpdated.data && resUpdated.data.length > 0) {
+          fetchedData = resUpdated.data[0];
+        } else if (resUpdated.error) {
+          // Query Strategy 2: Try ordering by created_at descending
+          const resCreated = await supabase
             .from('site_content')
-            .select('letter_content, image_url, updated_at')
-            .order('updated_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(1);
 
-          // Fallback if updated_at column is missing or ordering issue occurs
-          if (error && error.code !== 'PGRST116') {
-            console.warn('[User Page] ⚠️ Primary query with updated_at encountered error, trying fallback query:', error);
-            const fallbackRes = await supabase
+          if (!resCreated.error && resCreated.data && resCreated.data.length > 0) {
+            fetchedData = resCreated.data[0];
+          } else {
+            // Query Strategy 3: Select first row
+            const resFallback = await supabase
               .from('site_content')
               .select('*')
-              .limit(1)
-              .maybeSingle();
-            
-            if (!fallbackRes.error && fallbackRes.data) {
-              data = fallbackRes.data;
-              error = null;
-            } else if (fallbackRes.error) {
-              error = fallbackRes.error;
+              .limit(1);
+
+            if (!resFallback.error && resFallback.data && resFallback.data.length > 0) {
+              fetchedData = resFallback.data[0];
+            } else {
+              queryError = resUpdated.error || resCreated.error || resFallback.error;
             }
           }
+        }
 
-          if (error) {
-            console.error('[User Page] ❌ Supabase site_content fetch error:', {
-              message: error.message,
-              code: error.code,
-              details: error.details,
-              hint: error.hint,
-            });
+        const isTableMissing = (err: any) => {
+          if (!err) return false;
+          const msg = (err.message || '').toLowerCase();
+          const code = err.code || '';
+          return (
+            code === 'PGRST205' ||
+            code === '42P01' ||
+            msg.includes('schema cache') ||
+            msg.includes('could not find the table') ||
+            msg.includes('relation "public.site_content" does not exist')
+          );
+        };
+
+        if (queryError) {
+          if (isTableMissing(queryError)) {
+            console.info('[User Page] ℹ️ site_content table is not yet created in Supabase. Using default letter content.');
             if (isMounted) {
-              setDbError(`Supabase Error (${error.code || 'Query'}): ${error.message}`);
+              setDbError(null);
             }
-          } else if (data && isMounted) {
-            console.log('[User Page] ✅ Supabase site_content fetch result:', data);
-
-            let parsedLetter: LetterData = { ...LETTER_CONTENT };
-
-            if (typeof data.letter_content === 'string') {
-              try {
-                const obj = JSON.parse(data.letter_content);
-                if (obj && typeof obj === 'object') {
-                  parsedLetter = { ...parsedLetter, ...obj };
-                }
-              } catch {
-                // If it's a plain text string saved directly
-                const paras = data.letter_content
-                  .split(/\n\s*\n/)
-                  .map((p: string) => p.trim())
-                  .filter(Boolean);
-
-                parsedLetter = {
-                  ...parsedLetter,
-                  paragraphs: paras.length > 0 ? paras : [data.letter_content],
-                };
-              }
-            } else if (typeof data.letter_content === 'object' && data.letter_content !== null) {
-              parsedLetter = { ...parsedLetter, ...data.letter_content };
-            }
-
-            if (data.image_url) {
-              parsedLetter.photoUrl = data.image_url;
-            }
-
-            console.log('[User Page] 📥 Received letter_content applied:', parsedLetter.title);
-            console.log('[User Page] 🖼️ Received image_url applied:', parsedLetter.photoUrl);
-
-            setContent(parsedLetter);
-            loadedFromDb = true;
-            setDbError(null);
           } else {
-            console.log('[User Page] ℹ️ Supabase site_content table returned no rows, checking fallback cache.');
-          }
-        } catch (err: any) {
-          console.error('[User Page] ❌ Exception during Supabase fetch:', err);
-          if (isMounted) {
-            setDbError(`Connection Exception: ${err?.message || err}`);
-          }
-        }
-      } else {
-        console.log('[User Page] ℹ️ Supabase not configured in current environment, using local storage.');
-      }
-
-      // Check local storage fallback if not loaded from Supabase or if Supabase is offline
-      if (!loadedFromDb && isMounted) {
-        const local = localStorage.getItem('chithi_site_content_v1');
-        if (local) {
-          try {
-            const parsed = JSON.parse(local);
-            if (parsed) {
-              let merged = { ...LETTER_CONTENT };
-              if (parsed.letter_content) {
-                merged = { ...merged, ...parsed.letter_content };
-              }
-              if (parsed.image_url) {
-                merged.photoUrl = parsed.image_url;
-              }
-              console.log('[User Page] 📦 Loaded cached content from localStorage:', merged);
-              setContent(merged);
+            console.warn('[User Page] ⚠️ Supabase site_content fetch note:', queryError.message || String(queryError));
+            if (isMounted) {
+              setDbError(`Supabase Notice (${queryError.code || 'Query'}): ${queryError.message}`);
             }
-          } catch (localErr) {
-            console.warn('[User Page] Local storage parse error:', localErr);
           }
-        }
-      }
+        } else if (fetchedData && isMounted) {
+          console.log('[User Page] ✅ Supabase site_content fetch result found');
 
-      if (isMounted) {
-        setIsLoading(false);
+          let parsedLetter: LetterData = { ...LETTER_CONTENT };
+
+          if (typeof fetchedData.letter_content === 'string') {
+            try {
+              const obj = JSON.parse(fetchedData.letter_content);
+              if (obj && typeof obj === 'object') {
+                parsedLetter = { ...parsedLetter, ...obj };
+              }
+            } catch {
+              const paras = fetchedData.letter_content
+                .split(/\n\s*\n/)
+                .map((p: string) => p.trim())
+                .filter(Boolean);
+
+              parsedLetter = {
+                ...parsedLetter,
+                paragraphs: paras.length > 0 ? paras : [fetchedData.letter_content],
+              };
+            }
+          } else if (typeof fetchedData.letter_content === 'object' && fetchedData.letter_content !== null) {
+            parsedLetter = { ...parsedLetter, ...fetchedData.letter_content };
+          }
+
+          if (fetchedData.image_url) {
+            parsedLetter.photoUrl = fetchedData.image_url;
+          }
+
+          console.log('[User Page] 📥 Received letter_content applied:', parsedLetter.title);
+          console.log('[User Page] 🖼️ Received image_url applied:', parsedLetter.photoUrl);
+
+          setContent(parsedLetter);
+          setDbError(null);
+        } else {
+          console.log('[User Page] ℹ️ Supabase site_content table has no rows yet, showing initial template.');
+        }
+      } catch (err: any) {
+        console.error('[User Page] ❌ Exception during Supabase fetch:', err?.message || String(err));
+        if (isMounted) {
+          setDbError(`Connection Exception: ${err?.message || String(err)}`);
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
       }
     }
 
     loadLatestLetterContent();
 
+    // Subscribe to realtime database changes so changes from Admin appear immediately across devices
+    let channel: any = null;
+    if (supabase) {
+      channel = supabase
+        .channel('site_content_realtime')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'site_content' },
+          (payload) => {
+            console.log('[User Page] 🔔 Realtime site_content change detected:', payload);
+            loadLatestLetterContent();
+          }
+        )
+        .subscribe();
+    }
+
     return () => {
       isMounted = false;
+      if (supabase && channel) {
+        supabase.removeChannel(channel);
+      }
     };
   }, []);
 
@@ -434,8 +455,8 @@ export const LetterCard: React.FC<LetterCardProps> = ({ onRelock }) => {
                                 setIsImageLoading(false);
                                 setImageError(false);
                               }}
-                              onError={(e) => {
-                                console.warn('[User Page] ⚠️ Image failed to load from URL:', content.photoUrl, e);
+                              onError={() => {
+                                console.warn('[User Page] ⚠️ Image failed to load from URL:', content.photoUrl);
                                 setImageError(true);
                                 setIsImageLoading(false);
                               }}

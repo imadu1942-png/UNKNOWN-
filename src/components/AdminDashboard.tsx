@@ -79,22 +79,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadLetterContent = async () => {
     setIsLoadingContent(true);
     if (!supabase) {
-      console.log('[Admin] Supabase not configured in current environment, checking local storage.');
-      const local = localStorage.getItem('chithi_site_content_v1');
-      if (local) {
-        try {
-          const parsedLocal = JSON.parse(local);
-          if (parsedLocal?.letter_content) {
-            setLetterData((prev) => ({
-              ...prev,
-              ...parsedLocal.letter_content,
-              photoUrl: parsedLocal.image_url || parsedLocal.letter_content.photoUrl || prev.photoUrl,
-            }));
-          }
-        } catch (e) {
-          console.warn('[Admin] Local storage parse error:', e);
-        }
-      }
+      console.log('[Admin] Supabase not configured in current environment.');
       setIsLoadingContent(false);
       return;
     }
@@ -102,57 +87,93 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     try {
       console.log('[Admin] 📡 Loading letter content from site_content table...');
       
-      let { data, error } = await supabase
-        .from('site_content')
-        .select('letter_content, image_url, updated_at')
-        .order('updated_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      let fetchedData: any = null;
+      let queryError: any = null;
 
-      if (error && error.code !== 'PGRST116') {
-        console.warn('[Admin] Query with updated_at failed, attempting fallback select:', error);
-        const fallbackRes = await supabase
+      // Strategy 1: Try order by updated_at descending
+      const qUpdated = await supabase
+        .from('site_content')
+        .select('*')
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      if (!qUpdated.error && qUpdated.data && qUpdated.data.length > 0) {
+        fetchedData = qUpdated.data[0];
+      } else if (qUpdated.error) {
+        // Strategy 2: Try order by created_at descending
+        const qCreated = await supabase
           .from('site_content')
           .select('*')
-          .limit(1)
-          .maybeSingle();
-        data = fallbackRes.data;
-        error = fallbackRes.error;
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (!qCreated.error && qCreated.data && qCreated.data.length > 0) {
+          fetchedData = qCreated.data[0];
+        } else {
+          // Strategy 3: Select first row
+          const qFallback = await supabase
+            .from('site_content')
+            .select('*')
+            .limit(1);
+
+          if (!qFallback.error && qFallback.data && qFallback.data.length > 0) {
+            fetchedData = qFallback.data[0];
+          } else {
+            queryError = qUpdated.error || qCreated.error || qFallback.error;
+          }
+        }
       }
 
-      if (error) {
-        console.error('[Admin] ❌ Supabase fetch error:', error);
-        showToast('error', `ডেটা লোড করতে সমস্যা: ${error.message}`);
-      } else if (data) {
-        console.log('[Admin] ✅ Supabase site_content fetch result:', data);
-        let parsed: any = data.letter_content;
-        if (typeof data.letter_content === 'string') {
+      const isTableMissing = (err: any) => {
+        if (!err) return false;
+        const msg = (err.message || '').toLowerCase();
+        const code = err.code || '';
+        return (
+          code === 'PGRST205' ||
+          code === '42P01' ||
+          msg.includes('schema cache') ||
+          msg.includes('could not find the table') ||
+          msg.includes('relation "public.site_content" does not exist')
+        );
+      };
+
+      if (queryError) {
+        if (isTableMissing(queryError)) {
+          console.info('[Admin] ℹ️ site_content table is not yet created in Supabase database.');
+        } else {
+          console.warn('[Admin] ⚠️ Supabase fetch notice:', queryError.message || String(queryError));
+          showToast('error', `ডেটাবেজ থেকে লোড করতে সমস্যা: ${queryError.message}`);
+        }
+      } else if (fetchedData) {
+        console.log('[Admin] ✅ Supabase site_content fetch result found');
+        let parsed: any = fetchedData.letter_content;
+        if (typeof fetchedData.letter_content === 'string') {
           try {
-            parsed = JSON.parse(data.letter_content);
+            parsed = JSON.parse(fetchedData.letter_content);
           } catch {
-            const paras = data.letter_content
+            const paras = fetchedData.letter_content
               .split(/\n\s*\n/)
               .map((p: string) => p.trim())
               .filter(Boolean);
             parsed = {
-              ...LETTER_CONTENT,
-              paragraphs: paras.length > 0 ? paras : [data.letter_content],
+              paragraphs: paras.length > 0 ? paras : [fetchedData.letter_content],
             };
           }
         }
 
-        const resolvedPhotoUrl = data.image_url || parsed?.photoUrl || letterData.photoUrl;
+        const resolvedPhotoUrl = fetchedData.image_url || parsed?.photoUrl || letterData.photoUrl;
         console.log('[Admin] Resolved photoUrl from DB:', resolvedPhotoUrl);
         setLetterData((prev) => ({
           ...prev,
-          ...parsed,
+          ...(parsed || {}),
           photoUrl: resolvedPhotoUrl,
         }));
       } else {
-        console.log('[Admin] ℹ️ site_content table is currently empty.');
+        console.log('[Admin] ℹ️ site_content table is currently empty in Supabase.');
       }
     } catch (err: any) {
       console.error('[Admin] ❌ Exception in loadLetterContent:', err);
+      showToast('error', `সংযোগ ত্রুটি: ${err?.message || err}`);
     } finally {
       setIsLoadingContent(false);
     }
@@ -166,22 +187,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadOpinions = async () => {
     setIsLoadingOpinions(true);
     if (!supabase) {
-      // Local fallback
-      const local = localStorage.getItem('chithi_opinions_v1');
-      if (local) {
-        try {
-          const parsed = JSON.parse(local);
-          setOpinions(
-            parsed.map((item: any) => ({
-              id: item.id || String(Math.random()),
-              opinion_text: `${item.name || 'পাঠক'}: ${item.message}`,
-              created_at: item.submittedAt || new Date().toISOString(),
-            }))
-          );
-        } catch {
-          setOpinions([]);
-        }
-      }
+      setOpinions([]);
       setIsLoadingOpinions(false);
       return;
     }
@@ -194,13 +200,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         .order('created_at', { ascending: false });
 
       if (error) {
-        console.error('[Admin] Error fetching opinions:', error);
+        const isTableMissing = 
+          error.code === 'PGRST205' || 
+          error.code === '42P01' || 
+          (error.message || '').includes('schema cache') ||
+          (error.message || '').includes('Could not find the table');
+        
+        if (isTableMissing) {
+          console.info('[Admin] ℹ️ opinions table is not yet created in Supabase database.');
+          setOpinions([]);
+        } else {
+          console.warn('[Admin] Notice fetching opinions:', error.message);
+          showToast('error', `মতামত লোড করতে ব্যর্থ: ${error.message}`);
+        }
       } else if (data) {
         console.log('[Admin] ✅ Received opinions:', data.length);
         setOpinions(data);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('[Admin] Exception fetching opinions:', err);
+      showToast('error', `মতামত সংযোগ ত্রুটি: ${err?.message || err}`);
     } finally {
       setIsLoadingOpinions(false);
     }
@@ -209,6 +228,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   useEffect(() => {
     if (activeTab === 'opinions') {
       loadOpinions();
+
+      // Subscribe to realtime opinion updates
+      let channel: any = null;
+      if (supabase) {
+        channel = supabase
+          .channel('admin_opinions_realtime')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'opinions' },
+            () => {
+              console.log('[Admin] 🔔 New opinion update received, reloading...');
+              loadOpinions();
+            }
+          )
+          .subscribe();
+      }
+
+      return () => {
+        if (supabase && channel) {
+          supabase.removeChannel(channel);
+        }
+      };
     }
   }, [activeTab]);
 
@@ -221,21 +262,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // 1. SAVE LETTER HANDLER
   const handleSaveLetter = async () => {
     setIsSaving(true);
-    console.log('[Admin] 💾 Initiating Save Letter operation...');
+    console.log('[Admin] 💾 Initiating Save Letter operation to Supabase...');
 
     if (!supabase) {
-      console.log('[Admin] Supabase not connected. Saving letter to localStorage.');
-      localStorage.setItem(
-        'chithi_site_content_v1',
-        JSON.stringify({
-          letter_content: letterData,
-          image_url: letterData.photoUrl,
-        })
-      );
-      setTimeout(() => {
-        setIsSaving(false);
-        showToast('success', 'চিঠির পরিবর্তন লোকাল মোডে সেভ হয়েছে। Supabase সংযুক্ত করতে .env ভ্যারিয়েবল দিন।');
-      }, 400);
+      setIsSaving(false);
+      showToast('error', 'Supabase ডেটাবেজ কনফিগার করা নেই। VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY প্রদান করুন।');
       return;
     }
 
@@ -251,19 +282,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         throw new Error(`টেবিল অ্যাক্সেস ব্যর্থ (${fetchErr.code}): ${fetchErr.message}`);
       }
 
-      const payload = {
+      const payloadWithTimestamp: Record<string, any> = {
         letter_content: JSON.stringify(letterData),
-        image_url: letterData.photoUrl,
+        image_url: letterData.photoUrl || '',
         updated_at: new Date().toISOString(),
+      };
+
+      const payloadWithoutTimestamp: Record<string, any> = {
+        letter_content: JSON.stringify(letterData),
+        image_url: letterData.photoUrl || '',
       };
 
       if (existingRows && existingRows.length > 0) {
         console.log(`[Admin] 🔄 Updating ${existingRows.length} existing row(s) in site_content...`);
         for (const row of existingRows) {
-          const { error: updateError } = await supabase
+          let { error: updateError } = await supabase
             .from('site_content')
-            .update(payload)
+            .update(payloadWithTimestamp)
             .eq('id', row.id);
+
+          // Retry without updated_at if column does not exist
+          if (updateError && updateError.code === '42703') {
+            const retryRes = await supabase
+              .from('site_content')
+              .update(payloadWithoutTimestamp)
+              .eq('id', row.id);
+            updateError = retryRes.error;
+          }
 
           if (updateError) {
             console.error('[Admin] ❌ Update error for row id', row.id, updateError);
@@ -273,9 +318,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         console.log('[Admin] ✅ Admin letter update result: SUCCESS (Updated existing row(s))');
       } else {
         console.log('[Admin] ➕ No existing rows found. Inserting initial row into site_content...');
-        const { error: insertError } = await supabase
+        let { error: insertError } = await supabase
           .from('site_content')
-          .insert([payload]);
+          .insert([payloadWithTimestamp]);
+
+        // Retry without updated_at if column does not exist
+        if (insertError && insertError.code === '42703') {
+          const retryInsert = await supabase
+            .from('site_content')
+            .insert([payloadWithoutTimestamp]);
+          insertError = retryInsert.error;
+        }
 
         if (insertError) {
           console.error('[Admin] ❌ Insert error:', insertError);
@@ -284,16 +337,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         console.log('[Admin] ✅ Admin letter update result: SUCCESS (Inserted new row)');
       }
 
-      // Sync local storage as reliable local cache
-      localStorage.setItem(
-        'chithi_site_content_v1',
-        JSON.stringify({
-          letter_content: letterData,
-          image_url: letterData.photoUrl,
-        })
-      );
-
-      showToast('success', 'চিঠির বিষয়বস্তু Supabase ডেটাবেজে সফলভাবে সংরক্ষিত হয়েছে!');
+      showToast('success', 'চিঠির বিষয়বস্তু Supabase ডেটাবেজে সফলভাবে স্থায়ী সংরক্ষিত হয়েছে!');
     } catch (err: any) {
       console.error('[Admin] ❌ Save letter failed:', err);
       showToast('error', `সংরক্ষণ ব্যর্থ হয়েছে: ${err?.message || 'সমস্যা দেখা দিয়েছে'}`);
@@ -318,12 +362,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return;
     }
 
+    if (!supabase) {
+      showToast('error', 'Supabase Storage কনফিগার করা নেই। VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY প্রয়োজন।');
+      return;
+    }
+
     setIsUploading(true);
     setUploadProgress(20);
 
     let targetPhotoUrl = letterData.photoUrl;
 
-    if (supabase && selectedFile) {
+    if (selectedFile) {
       try {
         setUploadProgress(40);
         const fileExt = selectedFile.name.split('.').pop()?.toLowerCase() || 'jpg';
@@ -359,10 +408,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           throw new Error('Public URL তৈরি করা যায়নি। Storage bucket "letter-images"-এর Public toggle চেক করুন।');
         }
 
-        // Add a query timestamp for instant cache validation without changing the permanent object path
-        const permanentPublicUrl = publicUrlData.publicUrl;
-        targetPhotoUrl = `${permanentPublicUrl}?t=${Date.now()}`;
-        console.log('[Admin] 🖼️ Final saved image_url (Storage Public URL):', targetPhotoUrl);
+        targetPhotoUrl = publicUrlData.publicUrl;
+        console.log('[Admin] 🖼️ Final permanent image_url from Supabase Storage:', targetPhotoUrl);
       } catch (uploadErr: any) {
         console.error('[Admin] ❌ Upload to storage failed:', uploadErr);
         setIsUploading(false);
@@ -373,20 +420,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         );
         return;
       }
-    } else if (selectedFile && !supabase) {
-      // Offline fallback: Convert to persistent Data URL (Base64) - NEVER store temporary blob URL
-      try {
-        targetPhotoUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(selectedFile);
-        });
-      } catch {
-        targetPhotoUrl = letterData.photoUrl;
-      }
-    } else if (letterData.photoUrl && !selectedFile) {
-      targetPhotoUrl = letterData.photoUrl;
     }
 
     setUploadProgress(85);
@@ -395,52 +428,61 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const updatedLetter = { ...letterData, photoUrl: targetPhotoUrl };
 
       // 3. Save into site_content.image_url database field
-      if (supabase) {
-        console.log('[Admin] 💾 Saving image_url to site_content table...');
-        const { data: existingRows, error: fetchError } = await supabase
-          .from('site_content')
-          .select('id')
-          .limit(10);
+      console.log('[Admin] 💾 Saving image_url to site_content table...');
+      const { data: existingRows, error: fetchError } = await supabase
+        .from('site_content')
+        .select('id')
+        .limit(10);
 
-        if (fetchError) {
-          console.error('[Admin] ❌ Error checking site_content for image update:', fetchError);
-          throw fetchError;
-        }
-
-        const payload = {
-          image_url: targetPhotoUrl,
-          letter_content: JSON.stringify(updatedLetter),
-          updated_at: new Date().toISOString(),
-        };
-
-        if (existingRows && existingRows.length > 0) {
-          for (const row of existingRows) {
-            const { error: updateError } = await supabase
-              .from('site_content')
-              .update(payload)
-              .eq('id', row.id);
-
-            if (updateError) throw updateError;
-          }
-          console.log('[Admin] ✅ Image URL updated in site_content table');
-        } else {
-          const { error: insertError } = await supabase
-            .from('site_content')
-            .insert([payload]);
-
-          if (insertError) throw insertError;
-          console.log('[Admin] ✅ Image URL inserted in new site_content row');
-        }
+      if (fetchError) {
+        console.error('[Admin] ❌ Error checking site_content for image update:', fetchError);
+        throw fetchError;
       }
 
-      // Sync local storage so client immediately has it
-      localStorage.setItem(
-        'chithi_site_content_v1',
-        JSON.stringify({
-          letter_content: updatedLetter,
-          image_url: targetPhotoUrl,
-        })
-      );
+      const payloadWithTimestamp = {
+        image_url: targetPhotoUrl,
+        letter_content: JSON.stringify(updatedLetter),
+        updated_at: new Date().toISOString(),
+      };
+
+      const payloadWithoutTimestamp = {
+        image_url: targetPhotoUrl,
+        letter_content: JSON.stringify(updatedLetter),
+      };
+
+      if (existingRows && existingRows.length > 0) {
+        for (const row of existingRows) {
+          let { error: updateError } = await supabase
+            .from('site_content')
+            .update(payloadWithTimestamp)
+            .eq('id', row.id);
+
+          if (updateError && updateError.code === '42703') {
+            const retryRes = await supabase
+              .from('site_content')
+              .update(payloadWithoutTimestamp)
+              .eq('id', row.id);
+            updateError = retryRes.error;
+          }
+
+          if (updateError) throw updateError;
+        }
+        console.log('[Admin] ✅ Image URL updated in site_content table');
+      } else {
+        let { error: insertError } = await supabase
+          .from('site_content')
+          .insert([payloadWithTimestamp]);
+
+        if (insertError && insertError.code === '42703') {
+          const retryInsert = await supabase
+            .from('site_content')
+            .insert([payloadWithoutTimestamp]);
+          insertError = retryInsert.error;
+        }
+
+        if (insertError) throw insertError;
+        console.log('[Admin] ✅ Image URL inserted in new site_content row');
+      }
 
       setUploadProgress(100);
       setLetterData(updatedLetter);
@@ -466,16 +508,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const confirmDeleteOpinion = async () => {
     if (!deleteModalId) return;
 
-    setIsDeleting(true);
-    const targetId = deleteModalId;
-
     if (!supabase) {
-      setOpinions((prev) => prev.filter((op) => op.id !== targetId));
-      setIsDeleting(false);
+      showToast('error', 'Supabase সংযোগ নেই');
       setDeleteModalId(null);
-      showToast('success', 'মতামতটি মুছে ফেলা হয়েছে');
       return;
     }
+
+    setIsDeleting(true);
+    const targetId = deleteModalId;
 
     try {
       const { error } = await supabase
