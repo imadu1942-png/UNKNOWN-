@@ -1,8 +1,5 @@
 import { supabase, isSupabaseConfigured } from './supabase';
 
-export const DEFAULT_READER_EMAIL =
-  import.meta.env.VITE_READER_EMAIL || 'reader@chithidibosh.com';
-
 export const VALID_USER_PASSWORD = '3485';
 export const VALID_ADMIN_EMAIL = 'imu29306@gmail.com';
 export const VALID_ADMIN_PASSWORD = 'admin29306';
@@ -17,7 +14,8 @@ export interface AuthResult {
 
 /**
  * User (Reader) Login:
- * Authenticates user using the secret letter passcode (3485) and Supabase Auth.
+ * Authenticates users using the secret letter passcode (3485).
+ * Fully multi-user and multi-device compatible without any fixed reader email dependency.
  */
 export async function signInAsReader(password: string): Promise<AuthResult> {
   const cleanPassword = password.trim();
@@ -28,28 +26,15 @@ export async function signInAsReader(password: string): Promise<AuthResult> {
   // Check against the configured user passcode
   const isMatch = cleanPassword === VALID_USER_PASSWORD;
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: DEFAULT_READER_EMAIL,
-        password: cleanPassword,
-      });
-
-      if (!error && data?.user) {
-        return {
-          success: true,
-          user: data.user,
-        };
-      }
-    } catch {
-      // Continue to fallback check
-    }
-  }
-
   if (isMatch) {
+    const readerSession = {
+      id: `reader_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      role: 'reader',
+      authenticated_at: new Date().toISOString(),
+    };
     return {
       success: true,
-      user: { role: 'reader', email: DEFAULT_READER_EMAIL },
+      user: readerSession,
     };
   }
 
