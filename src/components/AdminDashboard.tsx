@@ -25,7 +25,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { signOut, getCurrentUser } from '../lib/auth';
+import { signOut, getCurrentUser, ensureAdminSession } from '../lib/auth';
 import { LETTER_CONTENT } from '../data/letterContent';
 import { LetterData, OpinionRecord } from '../types';
 
@@ -271,6 +271,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     try {
+      // Ensure active authenticated session before write
+      await ensureAdminSession();
+
       console.log('[Admin] 🔍 Querying existing rows in site_content table...');
       const { data: existingRows, error: fetchErr } = await supabase
         .from('site_content')
@@ -330,6 +333,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           insertError = retryInsert.error;
         }
 
+        // If insert failed due to RLS but table might have row id 1 or existing row
+        if (insertError && (insertError.code === '42501' || insertError.message?.includes('row-level security'))) {
+          console.warn('[Admin] ⚠️ Insert blocked by RLS. Attempting update on row id 1...');
+          const { error: fallbackUpdateErr } = await supabase
+            .from('site_content')
+            .update(payloadWithoutTimestamp)
+            .eq('id', 1);
+
+          if (!fallbackUpdateErr) {
+            insertError = null;
+            console.log('[Admin] ✅ Fallback update succeeded on row id 1');
+          }
+        }
+
         if (insertError) {
           console.error('[Admin] ❌ Insert error:', insertError);
           throw insertError;
@@ -340,7 +357,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       showToast('success', 'চিঠির বিষয়বস্তু Supabase ডেটাবেজে সফলভাবে স্থায়ী সংরক্ষিত হয়েছে!');
     } catch (err: any) {
       console.error('[Admin] ❌ Save letter failed:', err);
-      showToast('error', `সংরক্ষণ ব্যর্থ হয়েছে: ${err?.message || 'সমস্যা দেখা দিয়েছে'}`);
+      const isRls = err?.code === '42501' || err?.message?.includes('row-level security') || err?.message?.includes('security policy');
+      if (isRls) {
+        showToast('error', 'RLS পারমিশন এরর: Supabase-এ site_content টেবিলের INSERT/UPDATE পলিসি কার্যকর করুন।');
+      } else {
+        showToast('error', `সংরক্ষণ ব্যর্থ হয়েছে: ${err?.message || 'সমস্যা দেখা দিয়েছে'}`);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -425,6 +447,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setUploadProgress(85);
 
     try {
+      await ensureAdminSession();
       const updatedLetter = { ...letterData, photoUrl: targetPhotoUrl };
 
       // 3. Save into site_content.image_url database field

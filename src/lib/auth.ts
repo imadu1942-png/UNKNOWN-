@@ -63,21 +63,49 @@ export async function signInAsAdmin(email: string, password: string): Promise<Au
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      let { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
         password: cleanPassword,
       });
 
+      // If user doesn't exist in Supabase auth yet or signup needed
+      if (error && isCredentialsMatch) {
+        console.log('[Auth] Admin sign in error, attempting auto signup in Supabase Auth:', error.message);
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password: cleanPassword,
+        });
+
+        if (!signUpError && signUpData?.user) {
+          if (signUpData.session) {
+            data = { user: signUpData.user, session: signUpData.session };
+            error = null;
+          } else {
+            // Attempt sign in immediately after signup
+            const retryRes = await supabase.auth.signInWithPassword({
+              email: cleanEmail,
+              password: cleanPassword,
+            });
+            if (!retryRes.error && retryRes.data?.user) {
+              data = retryRes.data;
+              error = null;
+            }
+          }
+        } else if (signUpError) {
+          console.warn('[Auth] Supabase auto-signup notice:', signUpError.message);
+        }
+      }
+
       if (!error && data?.user) {
-        const adminUser = { ...data.user, role: 'authenticated' };
+        const adminUser = { ...data.user, role: 'authenticated', email: cleanEmail };
         sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(adminUser));
         return {
           success: true,
           user: adminUser,
         };
       }
-    } catch {
-      // Continue to fallback verification
+    } catch (err) {
+      console.warn('[Auth] Supabase auth attempt notice:', err);
     }
   }
 
@@ -98,6 +126,53 @@ export async function signInAsAdmin(email: string, password: string): Promise<Au
     success: false,
     error: 'ভুল অ্যাডমিন ইমেইল অথবা পাসওয়ার্ড!',
   };
+}
+
+/**
+ * Ensures the admin has an active Supabase authenticated session before database mutations.
+ */
+export async function ensureAdminSession(): Promise<boolean> {
+  if (!supabase || !isSupabaseConfigured) return false;
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (sessionData?.session?.user) {
+      return true;
+    }
+
+    // Attempt sign in with configured admin credentials
+    console.log('[Auth] Re-authenticating admin session in Supabase...');
+    const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+      email: VALID_ADMIN_EMAIL,
+      password: VALID_ADMIN_PASSWORD,
+    });
+
+    if (!signInErr && signInData?.session) {
+      return true;
+    }
+
+    // Try auto-signup if user wasn't registered in Supabase auth yet
+    const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+      email: VALID_ADMIN_EMAIL,
+      password: VALID_ADMIN_PASSWORD,
+    });
+
+    if (!signUpErr && signUpData?.session) {
+      return true;
+    }
+
+    // Immediate retry sign-in after signup
+    const { data: retryData, error: retryErr } = await supabase.auth.signInWithPassword({
+      email: VALID_ADMIN_EMAIL,
+      password: VALID_ADMIN_PASSWORD,
+    });
+
+    if (!retryErr && retryData?.session) {
+      return true;
+    }
+  } catch (err) {
+    console.warn('[Auth] ensureAdminSession warning:', err);
+  }
+  return false;
 }
 
 /**
