@@ -1,0 +1,6 @@
+{
+  "name": "চিঠি দিবস - Chithi Dibosh",
+  "description": "একটি মার্জিত ও সুন্দর চিঠি দিবস ওয়েবসাইট — পার্সোনাল লেটার, ছবি এবং মতামত বক্স সহ।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
