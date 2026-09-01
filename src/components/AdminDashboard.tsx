@@ -266,7 +266,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
     if (!supabase) {
       setIsSaving(false);
-      showToast('error', 'Supabase ডেটাবেজ কনফিগার করা নেই। VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY প্রদান করুন।');
+      console.warn('[Admin] ⚠️ Supabase client is not available for save operation.');
       return;
     }
 
@@ -385,7 +385,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     if (!supabase) {
-      showToast('error', 'Supabase Storage কনফিগার করা নেই। VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY প্রয়োজন।');
+      console.warn('[Admin] ⚠️ Supabase storage is not available.');
       return;
     }
 
